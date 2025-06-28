@@ -14,16 +14,104 @@ import (
 	"github.com/pkoukk/tiktoken-go"
 )
 
+type node struct {
+	name     string
+	path     string
+	isDir    bool
+	depth    int
+	expanded bool
+	parent   *node
+	children []*node
+}
+
+func buildNode(path string, name string, depth int, patterns []gitignore.Pattern, ignoreGitignore bool) (*node, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	isDir := info.IsDir()
+
+	n := &node{
+		name:     name,
+		path:     path,
+		isDir:    isDir,
+		depth:    depth,
+		expanded: false,
+	}
+
+	if !isDir {
+		return n, nil
+	}
+
+	files, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, file := range files {
+		fullPath := filepath.Join(path, file.Name())
+		relativePath := fullPath
+		repoRoot := ""
+		if repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true}); err == nil {
+			worktree, err := repo.Worktree()
+			if err == nil {
+				repoRoot = worktree.Filesystem.Root()
+			}
+		}
+		if repoRoot != "" {
+			rel, err := filepath.Rel(repoRoot, fullPath)
+			if err == nil {
+				relativePath = rel
+			}
+		}
+
+		// Always omit the .git directory unless we explicitly want all hidden files
+		if file.IsDir() && file.Name() == ".git" && !ignoreGitignore {
+			continue
+		}
+
+		if !ignoreGitignore && isIgnored(patterns, relativePath, file.IsDir()) {
+			continue
+		}
+
+		child, err := buildNode(fullPath, file.Name(), depth+1, patterns, ignoreGitignore)
+		if err != nil {
+			return nil, err
+		}
+		child.parent = n
+		n.children = append(n.children, child)
+	}
+
+	return n, nil
+}
+
+func flattenVisible(n *node) []*node {
+	var visible []*node
+	visible = append(visible, n)
+	if n.expanded {
+		for _, child := range n.children {
+			visible = append(visible, flattenVisible(child)...)
+		}
+	}
+	return visible
+}
+
 type tree struct {
-	path              string
-	items             []string
-	cursor            int
-	selected          map[int]struct{}
-	ignoreGitignore   bool
-	selectedFiles     int
-	selectedDirs      int
-	totalSize         int64
-	totalTokens       int
+	path            string
+	root            *node
+	visible         []*node
+	items           []string
+	indexToNode     map[int]*node
+	cursor          int
+	selected        map[int]struct{}
+	ignoreGitignore bool
+
+	selectedFiles int
+	selectedDirs  int
+	totalSize     int64
+	totalTokens   int
+
 	output            string
 	outputFile        string
 	previewing        bool
@@ -32,10 +120,6 @@ type tree struct {
 }
 
 func newTree(path string, ignoreGitignore bool) (*tree, error) {
-	files, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
 
 	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true})
 	var patterns []gitignore.Pattern
@@ -65,21 +149,30 @@ func newTree(path string, ignoreGitignore bool) (*tree, error) {
 		}
 	}
 
-	var items []string
-	for _, file := range files {
-		fullPath := filepath.Join(path, file.Name())
-		relativePath := fullPath
-		if repoRoot != "" {
-			rel, err := filepath.Rel(repoRoot, fullPath)
-			if err == nil {
-				relativePath = rel
-			}
-		}
+	// Build full directory tree using node structure
+	rootNode, err := buildNode(path, filepath.Base(path), 0, patterns, ignoreGitignore)
+	if err != nil {
+		return nil, err
+	}
+	rootNode.expanded = true
 
-		if !ignoreGitignore && isIgnored(patterns, relativePath, file.IsDir()) {
-			continue
+	visible := flattenVisible(rootNode)
+	items := make([]string, len(visible))
+	indexMap := make(map[int]*node, len(visible))
+	for i, n := range visible {
+		indent := strings.Repeat("  ", n.depth)
+		prefix := ""
+		if n.isDir {
+			if n.expanded {
+				prefix = "▾ "
+			} else {
+				prefix = "▸ "
+			}
+		} else {
+			prefix = "  "
 		}
-		items = append(items, file.Name())
+		items[i] = indent + prefix + n.name
+		indexMap[i] = n
 	}
 
 	ti := textinput.New()
@@ -90,7 +183,10 @@ func newTree(path string, ignoreGitignore bool) (*tree, error) {
 
 	return &tree{
 		path:            path,
+		root:            rootNode,
+		visible:         visible,
 		items:           items,
+		indexToNode:     indexMap,
 		selected:        make(map[int]struct{}),
 		ignoreGitignore: ignoreGitignore,
 		textInput:       ti,
@@ -141,6 +237,45 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if t.cursor < len(t.items)-1 {
 				t.cursor++
+			}
+		case "right", "l":
+			n := t.indexToNode[t.cursor]
+			if n != nil && n.isDir && !n.expanded {
+				n.expanded = true
+				current := n
+				t.rebuildVisible()
+				// keep cursor on same node
+				for i, nd := range t.indexToNode {
+					if nd == current {
+						t.cursor = i
+						break
+					}
+				}
+			}
+		case "left", "h":
+			n := t.indexToNode[t.cursor]
+			if n != nil {
+				if n.isDir && n.expanded {
+					n.expanded = false
+					current := n
+					t.rebuildVisible()
+					for i, nd := range t.indexToNode {
+						if nd == current {
+							t.cursor = i
+							break
+						}
+					}
+				} else if n.parent != nil {
+					parent := n.parent
+					parent.expanded = false
+					t.rebuildVisible()
+					for i, nd := range t.indexToNode {
+						if nd == parent {
+							t.cursor = i
+							break
+						}
+					}
+				}
 			}
 		case " ":
 			_, ok := t.selected[t.cursor]
@@ -227,7 +362,11 @@ func (t *tree) View() string {
 func (t *tree) generateOutput() {
 	var output string
 	for i := range t.selected {
-		path := filepath.Join(t.path, t.items[i])
+		n := t.indexToNode[i]
+		if n == nil {
+			continue
+		}
+		path := n.path
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
@@ -267,7 +406,11 @@ func (t *tree) updateStats() {
 	}
 
 	for i := range t.selected {
-		path := filepath.Join(t.path, t.items[i])
+		n := t.indexToNode[i]
+		if n == nil {
+			continue
+		}
+		path := n.path
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
@@ -303,6 +446,27 @@ func (t *tree) updateStats() {
 	t.selectedDirs = selectedDirs
 	t.totalSize = totalSize
 	t.totalTokens = totalTokens
+}
+
+// rebuildVisible regenerates the visible slice, items list, and index map
+// after expanding/collapsing directories.
+func (t *tree) rebuildVisible() {
+	t.visible = flattenVisible(t.root)
+	t.items = make([]string, len(t.visible))
+	t.indexToNode = make(map[int]*node, len(t.visible))
+	for i, n := range t.visible {
+		indent := strings.Repeat("  ", n.depth)
+		prefix := "  "
+		if n.isDir {
+			if n.expanded {
+				prefix = "▾ "
+			} else {
+				prefix = "▸ "
+			}
+		}
+		t.items[i] = indent + prefix + n.name
+		t.indexToNode[i] = n
+	}
 }
 
 func formatBytes(b int64) string {
