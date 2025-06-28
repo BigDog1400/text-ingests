@@ -404,7 +404,6 @@ Other:
 `
 	}
 
-
 	s := fmt.Sprintf("Current path: %s\n\n", t.path)
 	for i, item := range t.items {
 		cursor := " "
@@ -424,11 +423,13 @@ Other:
 			}
 		}
 
-		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, item)
+		// Replaced "[" and "]" with "(" and ")" to avoid terminal rendering issues.
+		s += fmt.Sprintf("%s (%s) %s\n", cursor, checked, item)
 	}
-	s += fmt.Sprintf("\n[i]gnore .gitignore: %v\n", t.ignoreGitignore)
-	s += fmt.Sprintf("Selected: %d files, %d folders | Size: %s | Tokens: %d\n", t.selectedFiles, t.selectedDirs, formatBytes(t.totalSize), t.totalTokens)
-	s += fmt.Sprintf("\n[g]enerate | [p]review | [o]utput file: %s | [q]uit | [?] help\n", t.outputFile)
+	// Replaced "[" and "]" with "(" and ")" and "|" with "-" for consistency and to avoid rendering issues.
+	s += fmt.Sprintf("\n(i)gnore .gitignore: %v\n", t.ignoreGitignore)
+	s += fmt.Sprintf("Selected: %d files, %d folders - Size: %s - Tokens: %d\n", t.selectedFiles, t.selectedDirs, formatBytes(t.totalSize), t.totalTokens)
+	s += fmt.Sprintf("\n(g)enerate - (p)review - (o)utput file: %s - (q)uit - (?) help\n", t.outputFile)
 	return s
 }
 
