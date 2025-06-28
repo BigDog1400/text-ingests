@@ -302,6 +302,25 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			t.toggleSelection(n, newState)
 			t.updateStats()
+		case "a":
+			// Determine if we should select all or deselect all
+			selectAll := false
+			for _, n := range t.visible {
+				if n.state != none {
+					selectAll = true // If any node is selected, we'll deselect all
+					break
+				}
+			}
+
+			newState := full
+			if selectAll {
+				newState = none
+			}
+
+			for _, n := range t.visible {
+				t.toggleSelection(n, newState)
+			}
+			t.updateStats()
 		case "i":
 			t.ignoreGitignore = !t.ignoreGitignore
 			newTree, err := newTree(t.path, t.ignoreGitignore)
