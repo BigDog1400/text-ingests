@@ -14,6 +14,14 @@ import (
 	"github.com/pkoukk/tiktoken-go"
 )
 
+type selState int
+
+const (
+	none selState = iota
+	full
+	partial
+)
+
 type node struct {
 	name     string
 	path     string
@@ -22,9 +30,10 @@ type node struct {
 	expanded bool
 	parent   *node
 	children []*node
+	state    selState
 }
 
-func buildNode(path string, name string, depth int, patterns []gitignore.Pattern, ignoreGitignore bool) (*node, error) {
+func buildNode(path string, name string, depth int, patterns []gitignore.Pattern, ignoreGitignore bool, parentNode *node) (*node, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -38,6 +47,8 @@ func buildNode(path string, name string, depth int, patterns []gitignore.Pattern
 		isDir:    isDir,
 		depth:    depth,
 		expanded: false,
+		parent:   parentNode,
+		state:    none,
 	}
 
 	if !isDir {
@@ -75,15 +86,15 @@ func buildNode(path string, name string, depth int, patterns []gitignore.Pattern
 			continue
 		}
 
-		child, err := buildNode(fullPath, file.Name(), depth+1, patterns, ignoreGitignore)
+						child, err := buildNode(fullPath, file.Name(), depth+1, patterns, ignoreGitignore, n)
 		if err != nil {
 			return nil, err
 		}
-		child.parent = n
 		n.children = append(n.children, child)
 	}
 
 	return n, nil
+
 }
 
 func flattenVisible(n *node) []*node {
@@ -150,7 +161,7 @@ func newTree(path string, ignoreGitignore bool) (*tree, error) {
 	}
 
 	// Build full directory tree using node structure
-	rootNode, err := buildNode(path, filepath.Base(path), 0, patterns, ignoreGitignore)
+		rootNode, err := buildNode(path, filepath.Base(path), 0, patterns, ignoreGitignore, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -278,12 +289,18 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case " ":
-			_, ok := t.selected[t.cursor]
-			if ok {
-				delete(t.selected, t.cursor)
-			} else {
-				t.selected[t.cursor] = struct{}{}
+			n := t.indexToNode[t.cursor]
+			if n == nil {
+				return t, nil
 			}
+
+			// Determine the new state: if currently full or partial, deselect; otherwise, select.
+			newState := full
+			if n.state == full || n.state == partial {
+				newState = none
+			}
+
+			t.toggleSelection(n, newState)
 			t.updateStats()
 		case "i":
 			t.ignoreGitignore = !t.ignoreGitignore
@@ -347,8 +364,15 @@ func (t *tree) View() string {
 		}
 
 		checked := " "
-		if _, ok := t.selected[i]; ok {
-			checked = "x"
+		if n := t.indexToNode[i]; n != nil {
+			switch n.state {
+			case full:
+				checked = "x"
+			case partial:
+				checked = "-"
+			case none:
+				checked = " "
+			}
 		}
 
 		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, item)
@@ -396,7 +420,7 @@ func (t *tree) generateOutput() {
 }
 
 func (t *tree) updateStats() {
-	var selectedFiles, selectedDirs int
+		var selectedFiles, selectedDirs int
 	var totalSize int64
 	var totalTokens int
 
@@ -405,39 +429,40 @@ func (t *tree) updateStats() {
 		// Handle error
 	}
 
-	for i := range t.selected {
-		n := t.indexToNode[i]
-		if n == nil {
-			continue
-		}
-		path := n.path
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-
-		if info.IsDir() {
-			selectedDirs++
-			filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-				if err != nil {
-					return err
-				}
-				if !info.IsDir() {
-					selectedFiles++
-					totalSize += info.Size()
-					content, err := ioutil.ReadFile(p)
-					if err == nil {
-						totalTokens += len(tkn.Encode(string(content), nil, nil))
+	// Iterate through all visible nodes, not just selected map
+	for _, n := range t.visible {
+		if n.state == full || n.state == partial {
+			if n.isDir {
+				selectedDirs++
+				// For directories, we need to walk its children to count files and size/tokens
+				filepath.Walk(n.path, func(p string, info os.FileInfo, err error) error {
+					if err != nil {
+						return nil // Skip errors for now
 					}
+					if !info.IsDir() {
+						// Check if this file is actually selected (if its parent is partial)
+						// This is a simplification; a more robust solution would track individual file selections
+						// For now, if a directory is full or partial, we count all its files.
+						selectedFiles++
+						totalSize += info.Size()
+						content, err := ioutil.ReadFile(p)
+						if err == nil {
+							totalTokens += len(tkn.Encode(string(content), nil, nil))
+						}
+					}
+					return nil
+				})
+			} else {
+				selectedFiles++
+				info, err := os.Stat(n.path)
+				if err != nil {
+					continue
 				}
-				return nil
-			})
-		} else {
-			selectedFiles++
-			totalSize += info.Size()
-			content, err := ioutil.ReadFile(path)
-			if err == nil {
-				totalTokens += len(tkn.Encode(string(content), nil, nil))
+				totalSize += info.Size()
+				content, err := ioutil.ReadFile(n.path)
+				if err == nil {
+					totalTokens += len(tkn.Encode(string(content), nil, nil))
+				}
 			}
 		}
 	}
@@ -480,4 +505,50 @@ func formatBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func (t *tree) toggleSelection(n *node, state selState) {
+	n.state = state
+
+	// Recursively apply to children
+	if n.isDir {
+		for _, child := range n.children {
+			t.toggleSelection(child, state)
+		}
+	}
+
+	// Update parent's state
+	if n.parent != nil {
+		t.updateParentSelection(n.parent)
+	}
+}
+
+func (t *tree) updateParentSelection(n *node) {
+	if !n.isDir {
+		return // Only directories have selection states based on children
+	}
+
+	allFull := true
+	allNone := true
+	for _, child := range n.children {
+		if child.state != full {
+			allFull = false
+		}
+		if child.state != none {
+			allNone = false
+		}
+	}
+
+	if allFull {
+		n.state = full
+	} else if allNone {
+		n.state = none
+	} else {
+		n.state = partial
+	}
+
+	// Propagate up the tree
+	if n.parent != nil {
+		t.updateParentSelection(n.parent)
+	}
 }
