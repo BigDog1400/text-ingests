@@ -128,6 +128,7 @@ type tree struct {
 	previewing        bool
 	textInput         textinput.Model
 	inputtingFilename bool
+	showHelp          bool
 }
 
 func newTree(path string, ignoreGitignore bool) (*tree, error) {
@@ -239,8 +240,10 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+				case "q":
 			return t, tea.Quit
+		case "?":
+			t.showHelp = !t.showHelp
 		case "up", "k":
 			if t.cursor > 0 {
 				t.cursor--
@@ -263,7 +266,7 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "left", "h":
+		case "left":
 			n := t.indexToNode[t.cursor]
 			if n != nil {
 				if n.isDir && n.expanded {
@@ -375,6 +378,33 @@ func (t *tree) View() string {
 		return t.output
 	}
 
+	if t.showHelp {
+		return `
+CodeTree Help:
+
+Navigation:
+  ↑/k: Up
+  ↓/j: Down
+  ←/h: Collapse directory / Go to parent
+  →/l: Expand directory
+
+Selection:
+  <space>: Toggle selection of current item
+  a: Toggle selection of all visible items
+
+Actions:
+  g: Generate digest and quit
+  p: Preview digest
+  o: Output digest to file (prompts for filename)
+  i: Toggle ignoring .gitignore files
+
+Other:
+  q/esc: Quit
+  ?/h: Toggle help (this screen)
+`
+	}
+
+
 	s := fmt.Sprintf("Current path: %s\n\n", t.path)
 	for i, item := range t.items {
 		cursor := " "
@@ -398,7 +428,7 @@ func (t *tree) View() string {
 	}
 	s += fmt.Sprintf("\n[i]gnore .gitignore: %v\n", t.ignoreGitignore)
 	s += fmt.Sprintf("Selected: %d files, %d folders | Size: %s | Tokens: %d\n", t.selectedFiles, t.selectedDirs, formatBytes(t.totalSize), t.totalTokens)
-	s += fmt.Sprintf("\n[g]enerate | [p]review | [o]utput file: %s | [q]uit\n", t.outputFile)
+	s += fmt.Sprintf("\n[g]enerate | [p]review | [o]utput file: %s | [q]uit | [?] help\n", t.outputFile)
 	return s
 }
 
