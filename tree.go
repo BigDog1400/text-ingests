@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-git/v5"
@@ -335,6 +336,13 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			t.generateOutput()
 			return t, tea.Quit
+		case "c":
+            t.generateOutput()
+            err := clipboard.WriteAll(t.output)
+            if err != nil {
+                fmt.Printf("Error copying to clipboard: %v\n", err)
+            }
+            return t, tea.Quit
 		case "p":
 			t.generateOutput()
 			t.previewing = true
@@ -394,6 +402,7 @@ Selection:
 
 Actions:
   g: Generate digest and quit
+  c: Copy digest to clipboard and quit
   p: Preview digest
   o: Output digest to file (prompts for filename)
   i: Toggle ignoring .gitignore files
@@ -435,38 +444,55 @@ Other:
 
 func (t *tree) generateOutput() {
 	var output string
-	for i := range t.selected {
-		n := t.indexToNode[i]
-		if n == nil {
-			continue
-		}
-		path := n.path
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
+	fmt.Println("--- generateOutput called ---")
+	hasSelected := false
+	for _, n := range t.visible {
+		if n.state == full || n.state == partial {
+			hasSelected = true
+			path := n.path
+			fmt.Printf("Processing path: %s (isDir: %t, state: %v)\n", path, n.isDir, n.state)
+			info, err := os.Stat(path)
+			if err != nil {
+				fmt.Printf("Error stating path %s: %v\n", path, err)
+				continue
+			}
 
-		if info.IsDir() {
-			filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-				if err != nil {
-					return err
-				}
-				if !info.IsDir() {
-					content, err := ioutil.ReadFile(p)
+			if info.IsDir() {
+				filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+					if err != nil {
+						fmt.Printf("Error walking path %s: %v\n", p, err)
+						return err
+					}
+					if !info.IsDir() {
+						content, err := ioutil.ReadFile(p)
+						if err == nil {
+							output += fmt.Sprintf("--- %s ---\n\n%s\n\n", p, string(content))
+							fmt.Printf("Added file content for: %s (size: %d)\n", p, len(content))
+						} else {
+							fmt.Printf("Error reading file %s: %v\n", p, err)
+						}
+					}
+					return nil
+				})
+			} else {
+				if n.state == full {
+					content, err := ioutil.ReadFile(path)
 					if err == nil {
-						output += fmt.Sprintf("--- %s ---\n\n%s\n\n", p, content)
+						output += fmt.Sprintf("--- %s ---\n\n%s\n\n", path, content)
+						fmt.Printf("Added file content for: %s (size: %d)\n", path, len(content))
+					} else {
+						fmt.Printf("Error reading file %s: %v\n", path, err)
 					}
 				}
-				return nil
-			})
-		} else {
-			content, err := ioutil.ReadFile(path)
-			if err == nil {
-				output += fmt.Sprintf("--- %s ---\n\n%s\n\n", path, content)
 			}
 		}
 	}
+
+	if !hasSelected {
+		fmt.Println("No files or directories selected for output.")
+	}
 	t.output = output
+	fmt.Printf("--- generateOutput finished. Output length: %d ---\n", len(t.output))
 }
 
 func (t *tree) updateStats() {
