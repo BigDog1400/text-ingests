@@ -2,7 +2,7 @@
 
 A command-line tool for interactively selecting files and directories from a tree view, aggregating their content, and copying it to the clipboard. It's designed to help developers quickly gather context from multiple files for use with LLMs or other tools.
 
-![Screenshot](https://user-images.githubusercontent.com/username/repo/screenshot.png) <!-- Replace with an actual screenshot URL -->
+![Screenshot](https://github.com/BigDog1400/text-ingests/blob/master/screenshot.png) <!-- Replace with an actual screenshot URL -->
 
 ## Features
 
