@@ -17,12 +17,15 @@ import (
 )
 
 var (
-	dirStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	fileStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	cursorStyle   = lipgloss.NewStyle().Background(lipgloss.Color("237")).Foreground(lipgloss.Color("252"))
-	selectedCheck = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render("[✓]")
-	partialCheck  = lipgloss.NewStyle().Foreground(lipgloss.Color("69")).Render("[-]")
-	normalCheck   = "[ ]"
+	dirStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	fileStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	cursorStyle        = lipgloss.NewStyle().Background(lipgloss.Color("237")).Foreground(lipgloss.Color("252"))
+	selectedCheck      = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render("[✓]")
+	partialCheck       = lipgloss.NewStyle().Foreground(lipgloss.Color("69")).Render("[-]")
+	normalCheck        = "[ ]"
+	statusBarContainer = lipgloss.NewStyle().Background(lipgloss.Color("235")).Foreground(lipgloss.Color("252")).Padding(0, 1)
+	statusBarStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	helpStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 )
 
 type selState int
@@ -142,6 +145,7 @@ type tree struct {
 	textInput         textinput.Model
 	inputtingFilename bool
 	showHelp          bool
+	width             int
 }
 
 func newTree(path string, ignoreGitignore bool) (*tree, error) {
@@ -204,11 +208,17 @@ func isIgnored(patterns []gitignore.Pattern, path string, isDir bool) bool {
 }
 
 func (t *tree) Init() tea.Cmd {
-	return nil
+	return tea.EnterAltScreen
 }
 
 func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		t.width = msg.Width
+		return t, nil
+	}
 
 	if t.inputtingFilename {
 		switch msg := msg.(type) {
@@ -430,15 +440,30 @@ Other:
 		}
 
 		// Icon and name
-		icon := ""
+		var fileIcon string
 		if n.isDir {
-			if n.expanded {
-				icon = "▾ "
-			} else {
-				icon = "▸ "
+			fileIcon = "📁"
+		} else {
+			switch filepath.Ext(n.name) {
+			case ".txt", ".md":
+				fileIcon = "📝"
+			default:
+				fileIcon = "📄"
 			}
 		}
-		lineBuilder.WriteString(icon)
+
+		expander := "  " // For files
+		if n.isDir {
+			if n.expanded {
+				expander = "▾ "
+			} else {
+				expander = "▸ "
+			}
+		}
+
+		lineBuilder.WriteString(expander)
+		lineBuilder.WriteString(fileIcon)
+		lineBuilder.WriteString(" ")
 		lineBuilder.WriteString(n.name)
 
 		// Apply styles
@@ -460,22 +485,23 @@ Other:
 		s.WriteString("\n")
 	}
 
-	help := "? for help"
+	// Status bar
+	statusText := fmt.Sprintf("Selected: %d files, %d dirs | Size: %s | Tokens: %d", t.selectedFiles, t.selectedDirs, formatBytes(t.totalSize), t.totalTokens)
+	var helpText string
 	if t.showHelp {
-		help = "Press ? to close help"
+		helpText = "Press ? to close help"
+	} else {
+		helpText = "[g]enerate | [p]review | [c]opy | [q]uit | [?]help"
 	}
 
-	stats := fmt.Sprintf(
-		"Selected: %d files, %d dirs | Size: %s | Tokens: %d | Ignoring: %t | %s",
-		t.selectedFiles,
-		t.selectedDirs,
-		formatBytes(t.totalSize),
-		t.totalTokens,
-		t.ignoreGitignore,
-		help,
-	)
+	renderedStatus := statusBarStyle.Render(statusText)
+	renderedHelp := helpStyle.Render(helpText)
 
-	s.WriteString("\n" + stats)
+	// Stack the status and help text vertically
+	statusBarContent := lipgloss.JoinVertical(lipgloss.Left, renderedStatus, renderedHelp)
+
+	// Render the final bar inside the container, ensuring it spans the full width
+	s.WriteString("\n" + statusBarContainer.Width(t.width).Render(statusBarContent))
 
 	return s.String()
 }
