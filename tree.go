@@ -10,9 +10,19 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/pkoukk/tiktoken-go"
+)
+
+var (
+	dirStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	fileStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	cursorStyle   = lipgloss.NewStyle().Background(lipgloss.Color("237")).Foreground(lipgloss.Color("252"))
+	selectedCheck = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render("[✓]")
+	partialCheck  = lipgloss.NewStyle().Foreground(lipgloss.Color("69")).Render("[-]")
+	normalCheck   = "[ ]"
 )
 
 type selState int
@@ -78,7 +88,6 @@ func buildNode(path string, name string, depth int, patterns []gitignore.Pattern
 			}
 		}
 
-		// Always omit the .git directory unless we explicitly want all hidden files
 		if file.IsDir() && file.Name() == ".git" && !ignoreGitignore {
 			continue
 		}
@@ -87,7 +96,7 @@ func buildNode(path string, name string, depth int, patterns []gitignore.Pattern
 			continue
 		}
 
-						child, err := buildNode(fullPath, file.Name(), depth+1, patterns, ignoreGitignore, n)
+		child, err := buildNode(fullPath, file.Name(), depth+1, patterns, ignoreGitignore, n)
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +104,6 @@ func buildNode(path string, name string, depth int, patterns []gitignore.Pattern
 	}
 
 	return n, nil
-
 }
 
 func flattenVisible(n *node) []*node {
@@ -113,7 +121,6 @@ type tree struct {
 	path            string
 	root            *node
 	visible         []*node
-	items           []string
 	indexToNode     map[int]*node
 	cursor          int
 	selected        map[int]struct{}
@@ -133,7 +140,6 @@ type tree struct {
 }
 
 func newTree(path string, ignoreGitignore bool) (*tree, error) {
-
 	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true})
 	var patterns []gitignore.Pattern
 	var repoRoot string
@@ -145,15 +151,11 @@ func newTree(path string, ignoreGitignore bool) (*tree, error) {
 		}
 	}
 
-	// Manually load patterns from the root .gitignore. The go-git worktree
-	// excludes do not include these rules, so we append them here to make sure
-	// they are respected by the UI (e.g. to hide go.sum, test artifacts, etc.).
 	if !ignoreGitignore && repoRoot != "" {
 		gitignorePath := filepath.Join(repoRoot, ".gitignore")
 		if data, err := ioutil.ReadFile(gitignorePath); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				line = strings.TrimSpace(line)
-				// Skip empty lines and comments
 				if line == "" || strings.HasPrefix(line, "#") {
 					continue
 				}
@@ -162,48 +164,28 @@ func newTree(path string, ignoreGitignore bool) (*tree, error) {
 		}
 	}
 
-	// Build full directory tree using node structure
-		rootNode, err := buildNode(path, filepath.Base(path), 0, patterns, ignoreGitignore, nil)
+	rootNode, err := buildNode(path, filepath.Base(path), 0, patterns, ignoreGitignore, nil)
 	if err != nil {
 		return nil, err
 	}
 	rootNode.expanded = true
 
-	visible := flattenVisible(rootNode)
-	items := make([]string, len(visible))
-	indexMap := make(map[int]*node, len(visible))
-	for i, n := range visible {
-		indent := strings.Repeat("  ", n.depth)
-		prefix := ""
-		if n.isDir {
-			if n.expanded {
-				prefix = "▾ "
-			} else {
-				prefix = "▸ "
-			}
-		} else {
-			prefix = "  "
-		}
-		items[i] = indent + prefix + n.name
-		indexMap[i] = n
+	t := &tree{
+		path:            path,
+		root:            rootNode,
+		selected:        make(map[int]struct{}),
+		ignoreGitignore: ignoreGitignore,
 	}
+	t.rebuildVisible()
 
 	ti := textinput.New()
 	ti.Placeholder = "digest.txt"
 	ti.Focus()
 	ti.CharLimit = 156
 	ti.Width = 20
+	t.textInput = ti
 
-	return &tree{
-		path:            path,
-		root:            rootNode,
-		visible:         visible,
-		items:           items,
-		indexToNode:     indexMap,
-		selected:        make(map[int]struct{}),
-		ignoreGitignore: ignoreGitignore,
-		textInput:       ti,
-	}, nil
+	return t, nil
 }
 
 func isIgnored(patterns []gitignore.Pattern, path string, isDir bool) bool {
@@ -241,7 +223,7 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-				case "q":
+		case "q":
 			return t, tea.Quit
 		case "?":
 			t.showHelp = !t.showHelp
@@ -250,7 +232,7 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.cursor--
 			}
 		case "down", "j":
-			if t.cursor < len(t.items)-1 {
+			if t.cursor < len(t.visible)-1 {
 				t.cursor++
 			}
 		case "right", "l":
@@ -259,22 +241,21 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				n.expanded = true
 				current := n
 				t.rebuildVisible()
-				// keep cursor on same node
-				for i, nd := range t.indexToNode {
+				for i, nd := range t.visible {
 					if nd == current {
 						t.cursor = i
 						break
 					}
 				}
 			}
-		case "left":
+		case "left", "h":
 			n := t.indexToNode[t.cursor]
 			if n != nil {
 				if n.isDir && n.expanded {
 					n.expanded = false
 					current := n
 					t.rebuildVisible()
-					for i, nd := range t.indexToNode {
+					for i, nd := range t.visible {
 						if nd == current {
 							t.cursor = i
 							break
@@ -284,7 +265,7 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					parent := n.parent
 					parent.expanded = false
 					t.rebuildVisible()
-					for i, nd := range t.indexToNode {
+					for i, nd := range t.visible {
 						if nd == parent {
 							t.cursor = i
 							break
@@ -298,7 +279,6 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return t, nil
 			}
 
-			// Determine the new state: if currently full or partial, deselect; otherwise, select.
 			newState := full
 			if n.state == full || n.state == partial {
 				newState = none
@@ -307,17 +287,16 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.toggleSelection(n, newState)
 			t.updateStats()
 		case "a":
-			// Determine if we should select all or deselect all
 			selectAll := false
 			for _, n := range t.visible {
-				if n.state != none {
-					selectAll = true // If any node is selected, we'll deselect all
+				if n.state == none {
+					selectAll = true
 					break
 				}
 			}
 
 			newState := full
-			if selectAll {
+			if !selectAll {
 				newState = none
 			}
 
@@ -329,7 +308,6 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.ignoreGitignore = !t.ignoreGitignore
 			newTree, err := newTree(t.path, t.ignoreGitignore)
 			if err != nil {
-				// Handle error
 				return t, nil
 			}
 			return newTree, nil
@@ -337,12 +315,12 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.generateOutput()
 			return t, tea.Quit
 		case "c":
-            t.generateOutput()
-            err := clipboard.WriteAll(t.output)
-            if err != nil {
-                fmt.Printf("Error copying to clipboard: %v\n", err)
-            }
-            return t, tea.Quit
+			t.generateOutput()
+			err := clipboard.WriteAll(t.output)
+			if err != nil {
+				fmt.Printf("Error copying to clipboard: %v\n", err)
+			}
+			return t, tea.Quit
 		case "p":
 			t.generateOutput()
 			t.previewing = true
@@ -355,16 +333,10 @@ func (t *tree) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.previewing = false
 				return t, nil
 			}
-			selectedPath := filepath.Join(t.path, t.items[t.cursor])
-			info, err := os.Stat(selectedPath)
-			if err != nil {
-				// Handle error
-				return t, nil
-			}
-			if info.IsDir() {
-				newTree, err := newTree(selectedPath, t.ignoreGitignore)
+			selectedNode := t.indexToNode[t.cursor]
+			if selectedNode.isDir {
+				newTree, err := newTree(selectedNode.path, t.ignoreGitignore)
 				if err != nil {
-					// Handle error
 					return t, nil
 				}
 				return newTree, nil
@@ -398,174 +370,166 @@ Navigation:
 
 Selection:
   <space>: Toggle selection of current item
-  a: Toggle selection of all visible items
-
-Actions:
-  g: Generate digest and quit
-  c: Copy digest to clipboard and quit
-  p: Preview digest
-  o: Output digest to file (prompts for filename)
-  i: Toggle ignoring .gitignore files
+  a: Toggle selection of all items
 
 Other:
-  q/esc: Quit
-  ?/h: Toggle help (this screen)
+  i: Toggle ignoring .gitignore files
+  g: Generate digest and quit
+  c: Generate and copy digest to clipboard and quit
+  o: Set output file name
+  p: Preview digest
+  q: Quit
+  ?: Toggle help
 `
 	}
 
-	s := fmt.Sprintf("Current path: %s\n\n", t.path)
-	for i, item := range t.items {
-		cursor := " "
-		if t.cursor == i {
-			cursor = ">"
-		}
-
-		checked := " "
-		if n := t.indexToNode[i]; n != nil {
-			switch n.state {
-			case full:
-				checked = "x"
-			case partial:
-				checked = "-"
-			case none:
-				checked = " "
-			}
-		}
-
-		// Replaced "[" and "]" with "(" and ")" to avoid terminal rendering issues.
-		s += fmt.Sprintf("%s (%s) %s\n", cursor, checked, item)
-	}
-	// Replaced "[" and "]" with "(" and ")" and "|" with "-" for consistency and to avoid rendering issues.
-	s += fmt.Sprintf("\n(i)gnore .gitignore: %v\n", t.ignoreGitignore)
-	s += fmt.Sprintf("Selected: %d files, %d folders - Size: %s - Tokens: %d\n", t.selectedFiles, t.selectedDirs, formatBytes(t.totalSize), t.totalTokens)
-	s += fmt.Sprintf("\n(g)enerate - (p)review - (o)utput file: %s - (q)uit - (?) help\n", t.outputFile)
-	return s
-}
-
-func (t *tree) generateOutput() {
-	var output string
-	fmt.Println("--- generateOutput called ---")
-	hasSelected := false
-	for _, n := range t.visible {
-		if n.state == full || n.state == partial {
-			hasSelected = true
-			path := n.path
-			fmt.Printf("Processing path: %s (isDir: %t, state: %v)\n", path, n.isDir, n.state)
-			info, err := os.Stat(path)
-			if err != nil {
-				fmt.Printf("Error stating path %s: %v\n", path, err)
-				continue
-			}
-
-			if info.IsDir() {
-				filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-					if err != nil {
-						fmt.Printf("Error walking path %s: %v\n", p, err)
-						return err
-					}
-					if !info.IsDir() {
-						content, err := ioutil.ReadFile(p)
-						if err == nil {
-							output += fmt.Sprintf("--- %s ---\n\n%s\n\n", p, string(content))
-							fmt.Printf("Added file content for: %s (size: %d)\n", p, len(content))
-						} else {
-							fmt.Printf("Error reading file %s: %v\n", p, err)
-						}
-					}
-					return nil
-				})
-			} else {
-				if n.state == full {
-					content, err := ioutil.ReadFile(path)
-					if err == nil {
-						output += fmt.Sprintf("--- %s ---\n\n%s\n\n", path, content)
-						fmt.Printf("Added file content for: %s (size: %d)\n", path, len(content))
-					} else {
-						fmt.Printf("Error reading file %s: %v\n", path, err)
-					}
-				}
-			}
-		}
-	}
-
-	if !hasSelected {
-		fmt.Println("No files or directories selected for output.")
-	}
-	t.output = output
-	fmt.Printf("--- generateOutput finished. Output length: %d ---\n", len(t.output))
-}
-
-func (t *tree) updateStats() {
-		var selectedFiles, selectedDirs int
-	var totalSize int64
-	var totalTokens int
-
-	tkn, err := tiktoken.GetEncoding("cl100k_base")
-	if err != nil {
-		// Handle error
-	}
-
-	// Iterate through all visible nodes, not just selected map
-	for _, n := range t.visible {
-		if n.state == full || n.state == partial {
-			if n.isDir {
-				selectedDirs++
-				// For directories, we need to walk its children to count files and size/tokens
-				filepath.Walk(n.path, func(p string, info os.FileInfo, err error) error {
-					if err != nil {
-						return nil // Skip errors for now
-					}
-					if !info.IsDir() {
-						// Check if this file is actually selected (if its parent is partial)
-						// This is a simplification; a more robust solution would track individual file selections
-						// For now, if a directory is full or partial, we count all its files.
-						selectedFiles++
-						totalSize += info.Size()
-						content, err := ioutil.ReadFile(p)
-						if err == nil {
-							totalTokens += len(tkn.Encode(string(content), nil, nil))
-						}
-					}
-					return nil
-				})
-			} else {
-				selectedFiles++
-				info, err := os.Stat(n.path)
-				if err != nil {
-					continue
-				}
-				totalSize += info.Size()
-				content, err := ioutil.ReadFile(n.path)
-				if err == nil {
-					totalTokens += len(tkn.Encode(string(content), nil, nil))
-				}
-			}
-		}
-	}
-
-	t.selectedFiles = selectedFiles
-	t.selectedDirs = selectedDirs
-	t.totalSize = totalSize
-	t.totalTokens = totalTokens
-}
-
-// rebuildVisible regenerates the visible slice, items list, and index map
-// after expanding/collapsing directories.
-func (t *tree) rebuildVisible() {
-	t.visible = flattenVisible(t.root)
-	t.items = make([]string, len(t.visible))
-	t.indexToNode = make(map[int]*node, len(t.visible))
+	s := strings.Builder{}
 	for i, n := range t.visible {
+		check := normalCheck
+		if n.state == full {
+			check = selectedCheck
+		} else if n.state == partial {
+			check = partialCheck
+		}
+
 		indent := strings.Repeat("  ", n.depth)
-		prefix := "  "
+		prefix := ""
 		if n.isDir {
 			if n.expanded {
 				prefix = "▾ "
 			} else {
 				prefix = "▸ "
 			}
+		} else {
+			prefix = "  "
 		}
-		t.items[i] = indent + prefix + n.name
+
+		var lineStyle lipgloss.Style
+		if n.isDir {
+			lineStyle = dirStyle
+		} else {
+			lineStyle = fileStyle
+		}
+
+		line := fmt.Sprintf("%s %s%s%s", check, indent, prefix, n.name)
+		styledLine := lineStyle.Render(line)
+
+		if t.cursor == i {
+			s.WriteString(cursorStyle.Render(styledLine))
+		} else {
+			s.WriteString(styledLine)
+		}
+		s.WriteString("\n")
+	}
+
+	help := "? for help"
+	if t.showHelp {
+		help = "Press ? to close help"
+	}
+
+	stats := fmt.Sprintf(
+		"Selected: %d files, %d dirs | Size: %s | Tokens: %d | Ignoring: %t | %s",
+		t.selectedFiles,
+		t.selectedDirs,
+		formatBytes(t.totalSize),
+		t.totalTokens,
+		t.ignoreGitignore,
+		help,
+	)
+
+	s.WriteString("\n" + stats)
+
+	return s.String()
+}
+
+func (t *tree) generateOutput() {
+	var filesToRead []string
+	var collectFiles func(*node)
+	collectFiles = func(n *node) {
+		if n.state == full && !n.isDir {
+			filesToRead = append(filesToRead, n.path)
+		} else if n.state == partial || (n.state == full && n.isDir) {
+			for _, child := range n.children {
+				collectFiles(child)
+			}
+		}
+	}
+	collectFiles(t.root)
+
+	var b strings.Builder
+	for _, path := range filesToRead {
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		relativePath, err := filepath.Rel(t.path, path)
+		if err != nil {
+			relativePath = path
+		}
+
+		b.WriteString(fmt.Sprintf("--- %s ---\n", relativePath))
+		b.WriteString(string(content))
+		b.WriteString("\n")
+	}
+
+	t.output = b.String()
+
+	if t.outputFile != "" {
+		ioutil.WriteFile(t.outputFile, []byte(t.output), 0644)
+	}
+}
+
+func (t *tree) updateStats() {
+	t.selectedFiles = 0
+	t.selectedDirs = 0
+	t.totalSize = 0
+	t.totalTokens = 0
+
+	var content strings.Builder
+
+	var countTokens func(*node)
+	countTokens = func(n *node) {
+		if n.state == none {
+			return
+		}
+
+		if n.isDir {
+			if n.state == full {
+				t.selectedDirs++
+			}
+			for _, child := range n.children {
+				countTokens(child)
+			}
+		} else {
+			if n.state == full {
+				t.selectedFiles++
+				info, err := os.Stat(n.path)
+				if err == nil {
+					t.totalSize += info.Size()
+				}
+				fileContent, err := ioutil.ReadFile(n.path)
+				if err == nil {
+					content.Write(fileContent)
+				}
+			}
+		}
+	}
+
+	countTokens(t.root)
+
+	tke, err := tiktoken.GetEncoding("cl100k_base")
+	if err != nil {
+		return
+	}
+
+	t.totalTokens = len(tke.Encode(content.String(), nil, nil))
+}
+
+func (t *tree) rebuildVisible() {
+	t.visible = flattenVisible(t.root)
+	t.indexToNode = make(map[int]*node, len(t.visible))
+	for i, n := range t.visible {
 		t.indexToNode[i] = n
 	}
 }
@@ -585,15 +549,11 @@ func formatBytes(b int64) string {
 
 func (t *tree) toggleSelection(n *node, state selState) {
 	n.state = state
-
-	// Recursively apply to children
 	if n.isDir {
 		for _, child := range n.children {
 			t.toggleSelection(child, state)
 		}
 	}
-
-	// Update parent's state
 	if n.parent != nil {
 		t.updateParentSelection(n.parent)
 	}
@@ -601,29 +561,33 @@ func (t *tree) toggleSelection(n *node, state selState) {
 
 func (t *tree) updateParentSelection(n *node) {
 	if !n.isDir {
-		return // Only directories have selection states based on children
+		return
 	}
 
-	allFull := true
-	allNone := true
+	numChildren := len(n.children)
+	if numChildren == 0 {
+		return
+	}
+
+	fullySelected := 0
+	partiallySelected := 0
 	for _, child := range n.children {
-		if child.state != full {
-			allFull = false
-		}
-		if child.state != none {
-			allNone = false
+		switch child.state {
+		case full:
+			fullySelected++
+		case partial:
+			partiallySelected++
 		}
 	}
 
-	if allFull {
+	if fullySelected == numChildren {
 		n.state = full
-	} else if allNone {
-		n.state = none
-	} else {
+	} else if fullySelected > 0 || partiallySelected > 0 {
 		n.state = partial
+	} else {
+		n.state = none
 	}
 
-	// Propagate up the tree
 	if n.parent != nil {
 		t.updateParentSelection(n.parent)
 	}
