@@ -42,6 +42,7 @@ type node struct {
 	parent   *node
 	children []*node
 	state    selState
+	isLast   bool
 }
 
 func buildNode(path string, name string, depth int, patterns []gitignore.Pattern, ignoreGitignore bool, parentNode *node) (*node, error) {
@@ -101,6 +102,10 @@ func buildNode(path string, name string, depth int, patterns []gitignore.Pattern
 			return nil, err
 		}
 		n.children = append(n.children, child)
+	}
+
+	if len(n.children) > 0 {
+		n.children[len(n.children)-1].isLast = true
 	}
 
 	return n, nil
@@ -385,25 +390,58 @@ Other:
 
 	s := strings.Builder{}
 	for i, n := range t.visible {
+		var lineBuilder strings.Builder
+
+		// Checkbox
 		check := normalCheck
 		if n.state == full {
 			check = selectedCheck
 		} else if n.state == partial {
 			check = partialCheck
 		}
+		lineBuilder.WriteString(check)
+		lineBuilder.WriteString(" ")
 
-		indent := strings.Repeat("  ", n.depth)
-		prefix := ""
-		if n.isDir {
-			if n.expanded {
-				prefix = "▾ "
-			} else {
-				prefix = "▸ "
-			}
-		} else {
-			prefix = "  "
+		// Tree structure
+		ancestors := []*node{}
+		p := n.parent
+		for p != nil {
+			ancestors = append([]*node{p}, ancestors...)
+			p = p.parent
 		}
 
+		for _, ancestor := range ancestors {
+			if ancestor.depth < 0 { // Should not happen, but as a safeguard
+				continue
+			}
+			if ancestor.isLast {
+				lineBuilder.WriteString("    ")
+			} else {
+				lineBuilder.WriteString("│   ")
+			}
+		}
+
+		if n.depth > 0 {
+			if n.isLast {
+				lineBuilder.WriteString("└── ")
+			} else {
+				lineBuilder.WriteString("├── ")
+			}
+		}
+
+		// Icon and name
+		icon := ""
+		if n.isDir {
+			if n.expanded {
+				icon = "▾ "
+			} else {
+				icon = "▸ "
+			}
+		}
+		lineBuilder.WriteString(icon)
+		lineBuilder.WriteString(n.name)
+
+		// Apply styles
 		var lineStyle lipgloss.Style
 		if n.isDir {
 			lineStyle = dirStyle
@@ -411,8 +449,8 @@ Other:
 			lineStyle = fileStyle
 		}
 
-		line := fmt.Sprintf("%s %s%s%s", check, indent, prefix, n.name)
-		styledLine := lineStyle.Render(line)
+		// Render the line
+		styledLine := lineStyle.Render(lineBuilder.String())
 
 		if t.cursor == i {
 			s.WriteString(cursorStyle.Render(styledLine))
