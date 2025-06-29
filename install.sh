@@ -1,12 +1,12 @@
 #!/bin/sh
 # A script to install the latest version of text-ingests.
 # This script is intended to be run via curl:
-#   curl -sfL https://raw.githubusercontent.com/your-username/text-ingests/main/install.sh | sh
+#   curl -sfL https://raw.githubusercontent.com/BigDog1400/text-ingests/master/install.sh | sh
 
 set -e
 
 # The GitHub repository to fetch from.
-REPO="your-username/text-ingests"
+REPO="BigDog1400/text-ingests"
 
 # The name of the binary.
 BINARY="text-ingests"

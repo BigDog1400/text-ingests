@@ -22,7 +22,7 @@ A command-line tool for interactively selecting files and directories from a tre
 This is the simplest way to install. Open your terminal and run the following command:
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/your-username/text-ingests/main/install.sh | sh
+curl -sfL https://raw.githubusercontent.com/BigDog1400/text-ingests/master/install.sh | sh
 ```
 
 This script will automatically download the correct binary for your system and move it to `/usr/local/bin` so you can run it from anywhere.
@@ -33,7 +33,7 @@ This script will automatically download the correct binary for your system and m
 
 This is the easiest method and does not require you to have Go installed.
 
-1.  Go to the [**Releases**](https://github.com/your-username/text-ingests/releases) page of this repository.
+1.  Go to the [**Releases**](https://github.com/BigDog1400/text-ingests/releases) page of this repository.
 2.  Find the latest release and download the archive that matches your operating system and architecture (e.g., `text-ingests_1.0.0_darwin_arm64.tar.gz` for an Apple Silicon Mac).
 3.  Extract the archive. You will find the `text-ingests` executable inside.
 4.  Move the `text-ingests` executable to a directory in your system's `PATH`. For example:
@@ -51,10 +51,8 @@ Now you can run `text-ingests` from anywhere in your terminal.
 If you have Go installed, you can build from source using the following command:
 
 ```bash
-go install github.com/your-username/text-ingests@latest
+go install github.com/BigDog1400/text-ingests@latest
 ```
-
-*(Replace `your-username` with the actual GitHub username for this repository.)*
 
 This will compile the source code and install the `text-ingests` binary in your Go bin directory.
 
@@ -95,7 +93,7 @@ To run the project locally:
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/your-username/text-ingests.git
+    git clone https://github.com/BigDog1400/text-ingests.git
     cd text-ingests
     ```
 2.  Run the application:
